@@ -1,0 +1,6 @@
+[submodule "edk2"]
+	path = edk2
+	url = https://github.com/tianocore/edk2
+[submodule "linux"]
+	path = linux
+	url = https://github.com/torvalds/linux.git
