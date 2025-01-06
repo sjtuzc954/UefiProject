@@ -2,7 +2,7 @@
 
 #pragma pack(1)
 
-typedef union PTE4 {
+typedef union _PTE4 {
     UINT64 Value;
     struct {
         UINT64 Present : 1;
