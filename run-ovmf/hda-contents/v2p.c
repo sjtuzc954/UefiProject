@@ -10,45 +10,40 @@
 #define GET_BIT(X,Y) ((X & ((uint64_t)1<<Y)) >> Y)
 #define GET_PFN(X) (X & 0x7FFFFFFFFFFFFF)
 
-const int __endian_bit = 1;
-#define is_bigendian() ( (*(char*)&__endian_bit) == 0 )
 #define VAR_PATH "/sys/firmware/efi/efivars/MyVariable-a3a56e56-1d23-06dc-24bf-1473ff54e629"
 
 int i, c, pid, status;
 unsigned long virt_addr;
 int data_size;
-char *data_content;
-uint64_t read_val, file_offset, page_size;
-char path_buf [0x100] = {};
 FILE * f;
 char *end;
 uint64_t phys_addr;
+char *data_content;
+uint64_t read_val, file_offset, page_size;
+char path_buf [0x100] = {};
+
 
 enum CMD_TYPE {
     CMD_READ,
     CMD_WRITE
 }cmd_type;
 
-int read_pagemap(char * path_buf, unsigned long virt_addr);
-int write_var(enum CMD_TYPE type);
+void read_pagemap(char * path_buf, unsigned long virt_addr);
+void write_var(enum CMD_TYPE type);
 
 int main(int argc, char ** argv){
     printf("%d\n", argc);
     if(argc != 6 && argc != 5){
-        printf("Argument number is not correct! It must like:\n./VtoP PID VIRTUAL_ADDRESS METHOD(0:READ/1:WRITE) DATA_SIZE [DATA_CONTENT]\n");
+        printf("Usage:\n./VtoP PID VIRTUAL_ADDRESS METHOD(0:READ/1:WRITE) DATA_SIZE [DATA_CONTENT]\n");
         return -1;
     }
-    if(!memcmp(argv[1], "self", sizeof("self"))){
-        sprintf(path_buf, "/proc/self/pagemap");
-        pid = -1;
+
+    pid = strtol(argv[1], &end, 10);
+    if (end == argv[1] || *end != '\0' || pid <= 0){
+        printf("ERROR: invalid PID\n");
+        return -1;
     }
-    else{
-        pid = strtol(argv[1], &end, 10);
-        if (end == argv[1] || *end != '\0' || pid <= 0){
-            printf("PID must be a positive number or 'self'\n");
-            return -1;
-        }
-    }
+    
     virt_addr = strtoll(argv[2], NULL, 16);
     if(pid != -1)
         sprintf(path_buf, "/proc/%u/pagemap", pid);
@@ -66,12 +61,11 @@ int main(int argc, char ** argv){
     return 0;
 }
 
-int read_pagemap(char * path_buf, unsigned long virt_addr){
-    //printf("Big endian? %d\n", is_bigendian());
+void read_pagemap(char * path_buf, unsigned long virt_addr){
     f = fopen(path_buf, "rb");
     if(!f){
-        printf("Error! Cannot open %s\n", path_buf);
-        return -1;
+        printf("ERROR: failed to open %s\n", path_buf);
+        return;
     }
 
     file_offset = virt_addr / page_size * PAGEMAP_ENTRY;
@@ -79,37 +73,31 @@ int read_pagemap(char * path_buf, unsigned long virt_addr){
     printf("Reading %s at 0x%llx\n", path_buf, (unsigned long long) file_offset);
     status = fseek(f, file_offset, SEEK_SET);
     if(status){
-        perror("Failed to do fseek!");
-        return -1;
+        perror("ERROR: failed to fseek");
+        return;
     }
-    errno = 0;
     read_val = 0;
     unsigned char c_buf[PAGEMAP_ENTRY];
     for(i = 0; i < PAGEMAP_ENTRY; i++){
         c = getc(f);
         if(c == EOF){
-            printf("\nReached end of the file\n");
-            return 0;
+            return;
         }
-        if(is_bigendian()) c_buf[i] = c;
-        else c_buf[PAGEMAP_ENTRY - i - 1] = c;
-        printf("[%d]0x%x ", i, c);
+        c_buf[PAGEMAP_ENTRY - i - 1] = c;
     }
     for(i = 0; i < PAGEMAP_ENTRY; i++){
         read_val = (read_val << 8) + c_buf[i];
     }
-    printf("\n");
-    printf("Result: 0x%llx\n", (unsigned long long) read_val);
     
     if(GET_BIT(read_val, 63)) {
         uint64_t pfn = GET_PFN(read_val);
         phys_addr = pfn * page_size + virt_addr % page_size;
-        printf("PFN: 0x%llx (0x%llx)\n", pfn, (unsigned long long) phys_addr);
+        printf("PHYS_ADDR: 0x%llx\n", (unsigned long long) phys_addr);
     }
     else printf("Page not present\n");
-    if(GET_BIT(read_val, 62)) printf("Page swapped\n");
+    
     fclose(f);
-    return 0;
+    return;
 }
 
 void convertStringToUint8Array(const char *input, uint8_t *output, size_t *size) {
@@ -128,10 +116,10 @@ void convertStringToUint8Array(const char *input, uint8_t *output, size_t *size)
     free(inputCopy);
 }
 
-int write_var(enum CMD_TYPE type) {
-    printf("Ready to write in var\n\tparameterID: %d\n\ttarget phys addr: 0x%llx\n\tdata_size: %d\n", type, phys_addr, data_size);
+void write_var(enum CMD_TYPE type) {
+    printf("INFO: ready to write in var\n\tparameterID: %d\n\ttarget phys addr: 0x%llx\n\tdata_size: %d\n", type, phys_addr, data_size);
     if (type == 1) {
-        printf("Write data: %s\n", data_content);
+        printf("INFO: write data: %s\n", data_content);
     }
     
     uint8_t cc[4 + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t) + 128] = {
@@ -150,34 +138,31 @@ int write_var(enum CMD_TYPE type) {
     if (type)
         convertStringToUint8Array(data_content, cc + 4 + 3*sizeof(uint64_t), &array_size);
 
-    printf("cc array contents:\n");
-    for (size_t i = 0; i < sizeof(cc); ++i) {
+    int need_write_size = type ? (4 + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t) + data_size) : (4 + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t));
+    printf("INFO: cc array contents:\n");
+    for (size_t i = 0; i < need_write_size; ++i) {
         printf("%02X ", cc[i]);
     }
     printf("\n");
 
-    // 打开文件
     int fd = open(VAR_PATH, O_WRONLY | O_CREAT);
     if (fd == -1) {
-        perror("Error opening file");
-        return 1;
+        perror("ERROR: opening file");
+        return;
     }
 
-    // 写入数字
-    int need_write_size = type ? (4 + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t) + data_size) : (4 + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t));
     ssize_t bytes_written = write(fd, cc, need_write_size);
-    printf("bytes_writter: %d\n", bytes_written);
+    printf("INFO: bytes_written: %d\n", bytes_written);
     if (bytes_written != need_write_size) {
-        perror("Error writing to file");
+        perror("ERROR: writing to file");
         close(fd);
-        return 1;
+        return;
     }
 
-    // 关闭文件
     close(fd);
 
-    printf("Successfully wrote %ld bytes to %s\n", bytes_written, VAR_PATH);
+    printf("INFO: successfully wrote %ld bytes to %s\n", bytes_written, VAR_PATH);
 
-    return 0;
+    return;
 }
 
