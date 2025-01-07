@@ -12,7 +12,7 @@ The Directory structure is as follows:
 ├── edk2
 ├── linux
 ├── README.md
-├── 0001-SmartSmm.patch
+└── 0001-SmartSmm.patch
 ```
 
 From the beginning of every step, we assume your working directory is the project root.
@@ -103,3 +103,7 @@ fg
 <press Enter>
 # rookie prints the heap content, you should see the first element to be 16 (0x10), instead of 0.
 ```
+
+## Acknowledgements
+
+In our project, we read and re-implemented the architecture related logic (e.g., X64 page table modification) in [Deadwings](https://github.com/xsh3llsh0ck/Deadwing). And we build other functionalities (e.g. communication between SMI handler and OS user) based on it.
