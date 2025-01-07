@@ -3,6 +3,7 @@
 Please prepare edk2 and linux before running the project.
 
 linux: v6.8 (https://github.com/torvalds/linux/tree/v6.8)
+
 edk2: edk2-stable202411 (https://github.com/tianocore/edk2/tree/edk2-stable202411)
 
 The Directory structure is as follows:

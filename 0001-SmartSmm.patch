@@ -1,6 +1,6 @@
-From b07175b0d298685a73ccd5761cfccb177bd2443b Mon Sep 17 00:00:00 2001
+From 95d94774c24b879dd6666f80bf637cb059c686c2 Mon Sep 17 00:00:00 2001
 From: Cheng Zhang <2694824893@qq.com>
-Date: Tue, 7 Jan 2025 19:40:56 +0800
+Date: Tue, 7 Jan 2025 21:27:04 +0800
 Subject: [PATCH] SmartSmm
 
 ---
@@ -9,21 +9,19 @@ Subject: [PATCH] SmartSmm
  OvmfPkg/SmartSmm/Defs.h                |  24 ++
  OvmfPkg/SmartSmm/Pte.h                 |  83 +++++
  OvmfPkg/SmartSmm/SmartSmm.c            | 432 +++++++++++++++++++++++++
- OvmfPkg/SmartSmm/SmartSmm.inf          |  46 +++
+ OvmfPkg/SmartSmm/SmartSmm.inf          |  38 +++
  run-ovmf/hda-contents/attack_rookie.sh |  20 ++
- run-ovmf/hda-contents/pass_params.sh   |  20 ++
  run-ovmf/hda-contents/rookie.c         |  25 ++
  run-ovmf/hda-contents/smi.c            |  12 +
  run-ovmf/hda-contents/v2p.c            | 146 +++++++++
  run-ovmf/image/create-image.sh         | 201 ++++++++++++
  run-ovmf/run.sh                        |  14 +
- 13 files changed, 1027 insertions(+)
+ 12 files changed, 999 insertions(+)
  create mode 100644 OvmfPkg/SmartSmm/Defs.h
  create mode 100644 OvmfPkg/SmartSmm/Pte.h
  create mode 100755 OvmfPkg/SmartSmm/SmartSmm.c
  create mode 100755 OvmfPkg/SmartSmm/SmartSmm.inf
  create mode 100755 run-ovmf/hda-contents/attack_rookie.sh
- create mode 100755 run-ovmf/hda-contents/pass_params.sh
  create mode 100644 run-ovmf/hda-contents/rookie.c
  create mode 100644 run-ovmf/hda-contents/smi.c
  create mode 100644 run-ovmf/hda-contents/v2p.c
@@ -623,18 +621,10 @@ index 0000000000..0eef64eda4
 +}
 diff --git a/OvmfPkg/SmartSmm/SmartSmm.inf b/OvmfPkg/SmartSmm/SmartSmm.inf
 new file mode 100755
-index 0000000000..cc3cc187d6
+index 0000000000..b8e7c74482
 --- /dev/null
 +++ b/OvmfPkg/SmartSmm/SmartSmm.inf
-@@ -0,0 +1,46 @@
-+## @file
-+# A skelton of the root SMI handler.
-+#
-+# Copyright (c) 2021 Satoshi Tanda
-+#
-+# SPDX-License-Identifier: BSD-2-Clause-Patent
-+##
-+
+@@ -0,0 +1,38 @@
 +[Defines]
 +  INF_VERSION                    = 1.29
 +  BASE_NAME                      = SmartSmm
@@ -695,32 +685,6 @@ index 0000000000..422f9c2f6a
 +fi
 +
 +./v2p $*
-+
-+if [ $? -eq 0 ]; then
-+    ./smi
-+fi
-diff --git a/run-ovmf/hda-contents/pass_params.sh b/run-ovmf/hda-contents/pass_params.sh
-new file mode 100755
-index 0000000000..6caf56a597
---- /dev/null
-+++ b/run-ovmf/hda-contents/pass_params.sh
-@@ -0,0 +1,20 @@
-+#!/bin/bash
-+set -x
-+VAR_PATH="/sys/firmware/efi/efivars/MyVariable-a3a56e56-1d23-06dc-24bf-1473ff54e629"
-+
-+if [ -e $VAR_PATH ]; then
-+    chattr -i $VAR_PATH
-+    rm $VAR_PATH
-+    echo "Removed $VAR_PATH"
-+fi
-+
-+if [ ! -x "v2p" ]; then
-+    gcc -o v2p mnt/v2p.c
-+    gcc -o smi mnt/smi.c
-+fi
-+
-+./v2p $@
 +
 +if [ $? -eq 0 ]; then
 +    ./smi

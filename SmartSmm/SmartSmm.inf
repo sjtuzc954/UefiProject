@@ -1,11 +1,3 @@
-## @file
-# A skelton of the root SMI handler.
-#
-# Copyright (c) 2021 Satoshi Tanda
-#
-# SPDX-License-Identifier: BSD-2-Clause-Patent
-##
-
 [Defines]
   INF_VERSION                    = 1.29
   BASE_NAME                      = SmartSmm
