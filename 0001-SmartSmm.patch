@@ -1,0 +1,1158 @@
+From b07175b0d298685a73ccd5761cfccb177bd2443b Mon Sep 17 00:00:00 2001
+From: Cheng Zhang <2694824893@qq.com>
+Date: Tue, 7 Jan 2025 19:40:56 +0800
+Subject: [PATCH] SmartSmm
+
+---
+ OvmfPkg/OvmfPkgX64.dsc                 |   3 +
+ OvmfPkg/OvmfPkgX64.fdf                 |   1 +
+ OvmfPkg/SmartSmm/Defs.h                |  24 ++
+ OvmfPkg/SmartSmm/Pte.h                 |  83 +++++
+ OvmfPkg/SmartSmm/SmartSmm.c            | 432 +++++++++++++++++++++++++
+ OvmfPkg/SmartSmm/SmartSmm.inf          |  46 +++
+ run-ovmf/hda-contents/attack_rookie.sh |  20 ++
+ run-ovmf/hda-contents/pass_params.sh   |  20 ++
+ run-ovmf/hda-contents/rookie.c         |  25 ++
+ run-ovmf/hda-contents/smi.c            |  12 +
+ run-ovmf/hda-contents/v2p.c            | 146 +++++++++
+ run-ovmf/image/create-image.sh         | 201 ++++++++++++
+ run-ovmf/run.sh                        |  14 +
+ 13 files changed, 1027 insertions(+)
+ create mode 100644 OvmfPkg/SmartSmm/Defs.h
+ create mode 100644 OvmfPkg/SmartSmm/Pte.h
+ create mode 100755 OvmfPkg/SmartSmm/SmartSmm.c
+ create mode 100755 OvmfPkg/SmartSmm/SmartSmm.inf
+ create mode 100755 run-ovmf/hda-contents/attack_rookie.sh
+ create mode 100755 run-ovmf/hda-contents/pass_params.sh
+ create mode 100644 run-ovmf/hda-contents/rookie.c
+ create mode 100644 run-ovmf/hda-contents/smi.c
+ create mode 100644 run-ovmf/hda-contents/v2p.c
+ create mode 100755 run-ovmf/image/create-image.sh
+ create mode 100755 run-ovmf/run.sh
+
+diff --git a/OvmfPkg/OvmfPkgX64.dsc b/OvmfPkg/OvmfPkgX64.dsc
+index 556984bdaa..0ce2971f87 100644
+--- a/OvmfPkg/OvmfPkgX64.dsc
++++ b/OvmfPkg/OvmfPkgX64.dsc
+@@ -92,6 +92,8 @@
+   MSFT:RELEASE_*_*_CC_FLAGS            = /D MDEPKG_NDEBUG
+ !if $(TOOL_CHAIN_TAG) != "XCODE5" && $(TOOL_CHAIN_TAG) != "CLANGPDB"
+   GCC:*_*_*_CC_FLAGS                   = -mno-mmx -mno-sse
++  GCC:*_*_*_CC_FLAGS		       = -Wno-error
++  GCC:*_*_*_CC_FLAGS		       = -Wno
+ !endif
+ !if $(SOURCE_DEBUG_ENABLE) == TRUE
+   MSFT:*_*_X64_GENFW_FLAGS  = --keepexceptiontable
+@@ -1024,6 +1026,7 @@
+       NULL|MdeModulePkg/Library/VarCheckPolicyLib/VarCheckPolicyLib.inf
+   }
+   MdeModulePkg/Universal/Variable/RuntimeDxe/VariableSmmRuntimeDxe.inf
++  OvmfPkg/SmartSmm/SmartSmm.inf
+ 
+ !else
+ 
+diff --git a/OvmfPkg/OvmfPkgX64.fdf b/OvmfPkg/OvmfPkgX64.fdf
+index 489d03b60e..963610492d 100644
+--- a/OvmfPkg/OvmfPkgX64.fdf
++++ b/OvmfPkg/OvmfPkgX64.fdf
+@@ -380,6 +380,7 @@ INF  OvmfPkg/QemuFlashFvbServicesRuntimeDxe/FvbServicesSmm.inf
+ INF  MdeModulePkg/Universal/FaultTolerantWriteDxe/FaultTolerantWriteSmm.inf
+ INF  MdeModulePkg/Universal/Variable/RuntimeDxe/VariableSmm.inf
+ INF  MdeModulePkg/Universal/Variable/RuntimeDxe/VariableSmmRuntimeDxe.inf
++INF  OvmfPkg/SmartSmm/SmartSmm.inf
+ 
+ !else
+ 
+diff --git a/OvmfPkg/SmartSmm/Defs.h b/OvmfPkg/SmartSmm/Defs.h
+new file mode 100644
+index 0000000000..108b792a20
+--- /dev/null
++++ b/OvmfPkg/SmartSmm/Defs.h
+@@ -0,0 +1,24 @@
++#pragma once
++
++typedef enum _PAGE_SIZE_ENUMRATE {
++    Page4K = 0,
++    Page2M,
++    Page1G
++} PAGE_SIZE_ENUMRATE;
++
++typedef union {
++    INT64 ParameterId;
++
++    struct {
++        INT64 ParameterId;
++        VOID *TargetAddress;
++        UINT64 BytesToRead;
++    } ReadParameter;
++
++    struct {
++        INT64 ParameterId;
++        VOID *TargetAddress;
++        UINT64 BytesToWrite;
++        CHAR8 DataToWrite[128];
++    } WriteParameter;
++} RequestParameters;
+\ No newline at end of file
+diff --git a/OvmfPkg/SmartSmm/Pte.h b/OvmfPkg/SmartSmm/Pte.h
+new file mode 100644
+index 0000000000..fc1dff64b4
+--- /dev/null
++++ b/OvmfPkg/SmartSmm/Pte.h
+@@ -0,0 +1,83 @@
++#pragma once
++
++#pragma pack(1)
++
++typedef union _PTE0 {
++    UINT64 Value;
++    struct {
++        UINT64 Present : 1;
++        UINT64 Writable : 1;
++        UINT64 UserAccess : 1;
++        UINT64 WriteThrough : 1;
++        UINT64 CacheDisabled : 1;
++        UINT64 Accessed : 1;
++        UINT64 Ignored3 : 1;
++        UINT64 Size : 1;
++        UINT64 Ignored2 : 4;
++        UINT64 Pfn : 36;
++        UINT64 Reserved1 : 4;
++        UINT64 Ignored1 : 11;
++        UINT64 ExecutionDisabled : 1;
++    } Bits;
++} PTE0, *PPTE0;
++
++typedef union _PTE1 {
++    UINT64 Value;
++    struct {
++        UINT64 Present : 1;
++        UINT64 Writable : 1;
++        UINT64 UserAccess : 1;
++        UINT64 WriteThrough : 1;
++        UINT64 CacheDisabled : 1;
++        UINT64 Accessed : 1;
++        UINT64 Ignored3 : 1;
++        UINT64 Size : 1;
++        UINT64 Ignored2 : 4;
++        UINT64 Pfn : 36;
++        UINT64 Reserved1 : 4;
++        UINT64 Ignored1 : 11;
++        UINT64 ExecutionDisabled : 1;
++    } Bits;
++} PTE1, *PPTE1;
++
++typedef union _PTE2 {
++    UINT64 Value;
++    struct {
++        UINT64 Present : 1;
++        UINT64 Writable : 1;
++        UINT64 UserAccess : 1;
++        UINT64 WriteThrough : 1;
++        UINT64 CacheDisabled : 1;
++        UINT64 Accessed : 1;
++        UINT64 Ignored3 : 1;
++        UINT64 Size : 1;
++        UINT64 Ignored2 : 4;
++        UINT64 Pfn : 36;
++        UINT64 Reserved1 : 4;
++        UINT64 Ignored1 : 11;
++        UINT64 ExecutionDisabled : 1;
++    } Bits;
++} PTE2, *PPTE2;
++
++typedef union _PTE3 {
++    UINT64 Value;
++    struct {
++        UINT64 Present : 1;
++        UINT64 Writable : 1;
++        UINT64 User_access : 1;
++        UINT64 WriteThrough : 1;
++        UINT64 CacheDisabled : 1;
++        UINT64 Accessed : 1;
++        UINT64 Dirty : 1;
++        UINT64 AccessType : 1;
++        UINT64 Global : 1;
++        UINT64 Ignored2 : 3;
++        UINT64 Pfn : 36;
++        UINT64 Reserved1 : 4;
++        UINT64 Ignored3 : 7;
++        UINT64 ProtectionKey : 4;
++        UINT64 ExecutionDisabled : 1;
++    } Bits;
++} PTE3, *PPTE3;
++
++#pragma pack()
+diff --git a/OvmfPkg/SmartSmm/SmartSmm.c b/OvmfPkg/SmartSmm/SmartSmm.c
+new file mode 100755
+index 0000000000..0eef64eda4
+--- /dev/null
++++ b/OvmfPkg/SmartSmm/SmartSmm.c
+@@ -0,0 +1,432 @@
++#include <Uefi.h>
++#include <PiDxe.h>
++#include <Library/BaseLib.h>
++#include <Library/DebugLib.h>
++#include <Library/MmServicesTableLib.h>
++#include <Library/UefiBootServicesTableLib.h>
++#include <IndustryStandard/Q35MchIch9.h>
++#include <Library/SmmServicesTableLib.h>
++#include <Library/UefiLib.h>
++#include <Library/CpuLib.h>
++#include "Pte.h"
++#include "Defs.h"
++#include <Protocol/SmmVariable.h>
++#include <Library/MemoryAllocationLib.h>
++
++// a3a56e56-1d23-06dc-24bf-1473ff54e629
++#define MY_VARIABLE_GUID { 0xa3a56e56, 0x1d23, 0x06dc, {0x24, 0xbf, 0x14, 0x73, 0xff, 0x54, 0xe6, 0x29} }
++
++
++EFI_PHYSICAL_ADDRESS gRemapPage;
++
++STATIC EFI_SMM_VARIABLE_PROTOCOL *mSmmVariable;
++STATIC EFI_MM_CPU_IO_PROTOCOL *mMmCpuIo;
++
++#define CR0_WP    BIT16
++#define CR0_PG    BIT31
++#define CR4_PSE   BIT4
++#define CR4_PAE   BIT5
++#define EFER_LMA  BIT8
++
++#define EFI_PAGE_1GB BASE_1GB
++#define EFI_PAGE_2MB BASE_2MB
++#define EFI_PAGE_4KB BASE_4KB
++
++#define IA32_AMD64_EFER 0xC0000080
++
++VOID
++EFIAPI
++PhysMemCpy(
++    IN VOID   *Dest,
++    IN VOID   *Src,
++    IN UINT32  Len
++) {
++    for(UINT8 *D = Dest, *S = Src; Len--; *D++ = *S++);
++}
++
++/**
++ * Checks if:
++ * PG CR0 bit set
++ * PAE CR4 bit set, if not, checks PSE CR4 bit
++ * LMA EFER bit set
++ */
++BOOLEAN
++EFIAPI
++IsPagingEnabled(
++    VOID
++) {
++    // check if PG bit is not set
++    UINT64 Cr0 = AsmReadCr0();
++    if(!(Cr0 & CR0_PG)) {
++        return FALSE;
++    }
++
++    // check if PAE set, otherwise, check PSE bit.
++    // if PAE = 1 - 2MB large page
++    // if PAE = 0 and PSE = 1 - 4MB large page
++    // if both is 0 - 2MB large page
++    UINT64 Cr4 = AsmReadCr4();
++    if(!(Cr4 & CR4_PAE)) {
++        // check if PSE set. If it's 1, halt next operations, because
++        // we're not working with 4MB pages
++        if(Cr4 & CR4_PSE) {
++            return FALSE;
++        }
++    }
++
++    // read EFER MSR to check if LMA set
++    UINT64 Efer = AsmReadMsr64(IA32_AMD64_EFER);
++    if(!(Efer & EFER_LMA)) {
++        return FALSE;
++    }
++
++    return TRUE;
++}
++
++/**
++ * Remap PhysAddress <-> VirtAddress
++ */
++BOOLEAN
++EFIAPI
++RemapAddress(
++    IN  UINT64              VirtAddress,
++    IN  UINT64              PhysAddress,
++    IN  UINT64              Cr3,
++    OUT PAGE_SIZE_ENUMRATE *PageSize
++) {
++    // PT base address is 4kb aligned.
++    Cr3 &= 0xFFFFFFFFFFFFF000;
++
++    DEBUG((DEBUG_INFO, "[SmartSmm] RemapAddress\n"));
++    DEBUG((DEBUG_INFO, "[SmartSmm] old address %x\n", VirtAddress));
++
++    PTE0 Pte0;
++    Pte0.Value = *(UINT64 *)(sizeof(UINT64) * ((VirtAddress >> 39) & 0x1FF) + Cr3);
++    if(!Pte0.Bits.Present)
++        return FALSE;
++
++    DEBUG((DEBUG_INFO, "[SmartSmm] PTE0 bits present\n"));
++
++    UINT64 Cr0;
++    PPTE1 Ppte1 = (PPTE1)((Pte0.Bits.Pfn << EFI_PAGE_SHIFT) + ((VirtAddress >> 30) & 0x1FF) * sizeof(UINT64));
++    if(Ppte1->Bits.Present) {
++        if(Ppte1->Bits.Size) {
++            // VirtAddress is 1GB mapped
++            if(PageSize)
++                *PageSize = Page1G;
++
++            Cr0 = AsmReadCr0();
++            AsmWriteCr0(Cr0 & ~CR0_WP);
++
++            Ppte1->Bits.Pfn = ((PhysAddress & ~(EFI_PAGE_1GB - 1)) >> EFI_PAGE_SHIFT);
++
++            AsmWriteCr0(Cr0);
++
++            CpuFlushTlb(); 
++            
++            return TRUE;
++        }
++    } else {
++        DEBUG((DEBUG_INFO, "[SmartSmm] Ppte1 bits not present\n"));
++        return FALSE;
++    }
++
++    PPTE2 Ppte2 = (PPTE2)((Ppte1->Bits.Pfn << EFI_PAGE_SHIFT) + ((VirtAddress >> 21) & 0x1FF) * sizeof(UINT64));
++    if(Ppte2->Bits.Present) {
++        if(Ppte2->Bits.Size) {
++            // VirtAddress is 2MB mapped
++            if(PageSize)
++                *PageSize = Page2M;
++            
++            Cr0 = AsmReadCr0();
++            AsmWriteCr0(Cr0 & ~CR0_WP);
++
++            Ppte2->Bits.Pfn = ((PhysAddress & ~(EFI_PAGE_2MB - 1)) >> EFI_PAGE_SHIFT);
++
++            AsmWriteCr0(Cr0);
++            
++            CpuFlushTlb();
++
++            return TRUE;
++        }
++    } else {
++        DEBUG((DEBUG_INFO, "[SmartSmm] Ppte2 bits not present\n"));
++        return FALSE;
++    }
++
++    PPTE3 Ppte3 = (PPTE3)((Ppte2->Bits.Pfn << EFI_PAGE_SHIFT) + ((VirtAddress >> 12) & 0x1FF) * sizeof(UINT64));
++    if(Ppte3->Bits.Present) {
++        // VirtAddress is 4KB mapped
++        if(PageSize)
++            *PageSize = Page4K;
++
++        Cr0 = AsmReadCr0();
++        AsmWriteCr0(Cr0 & ~CR0_WP);
++
++        Ppte3->Bits.Pfn = ((PhysAddress & ~(EFI_PAGE_4KB - 1)) >> EFI_PAGE_SHIFT);
++
++        AsmWriteCr0(Cr0);
++
++        CpuFlushTlb();
++
++        return TRUE;
++    }
++
++    DEBUG((DEBUG_INFO, "[SmartSmm] pte3 bits not present\n"));
++    return FALSE;
++}
++
++VOID
++EFIAPI
++RestoreSmramMappings(
++    VOID
++) {
++    UINT64 Cr3 = AsmReadCr3();
++    // Identity Mapping
++    RemapAddress(gRemapPage, gRemapPage, Cr3, NULL);
++}
++
++/**
++ * Map physical address into the SMRAM
++ */
++UINT64
++EFIAPI
++MapPhysAddrIntoSmram(
++    IN UINT64 PhysAddress
++) {
++    UINT8 PageSize = Page4K;
++    UINT64 RemapedMemory = gRemapPage;
++    UINT64 Cr3 = AsmReadCr3();
++    DEBUG((DEBUG_INFO, "[SmartSmm] Cr3: 0x%016lx\n", Cr3));
++    
++    if(RemapAddress(gRemapPage, PhysAddress, Cr3, &PageSize)) {        
++        if(PageSize == Page1G) {
++            RemapedMemory += PhysAddress & 0x3FFFFFF;
++        } else if(PageSize == Page2M) {
++            RemapedMemory += PhysAddress & 0x1FFFFF;
++        } else {
++            RemapedMemory += PhysAddress & 0xFFF;
++        }
++    } else {
++        RemapedMemory = 0;
++    }
++
++    return RemapedMemory;
++}
++
++EFI_STATUS
++EFIAPI
++CmdPhysRead(
++    IN VOID   *AddressToRead,
++    IN VOID   *ReceivedInfo,
++    IN UINT64  LengthToRead
++) {
++    DEBUG((DEBUG_INFO, "[SmartSmm] Reading from physical memory\r\n"));
++
++    BOOLEAN check = IsPagingEnabled();
++    if (check == TRUE) {
++        DEBUG((DEBUG_INFO, "[SmartSmm] SMI enabled\n"));
++    } else {
++        DEBUG((DEBUG_INFO, "[SmartSmm] SMI not enabled\n"));
++    }
++
++    // validate input
++    if((!AddressToRead || !LengthToRead || !ReceivedInfo) || LengthToRead > BASE_4KB) {
++        DEBUG((DEBUG_INFO, "[SmartSmm] Invalid parameters has been passed to specific command\r\n"));
++        return EFI_INVALID_PARAMETER;
++    }
++
++    DEBUG((DEBUG_INFO, "[SmartSmm] Input validated\r\n"));
++
++    // map physical address to the SMRAM
++    UINT64 PhysMapped = MapPhysAddrIntoSmram(AddressToRead);
++    if(PhysMapped != 0) {
++        // copy data to intermediate page
++        DEBUG((DEBUG_INFO, "[SmartSmm Prepare to phsmemcpy\r\n"));
++
++        PhysMemCpy(ReceivedInfo, PhysMapped, LengthToRead);
++
++        DEBUG((DEBUG_INFO, "[SmartSmm] 0x%016lx, 0x%016lx\r\n", PhysMapped, AddressToRead));
++
++
++        RestoreSmramMappings();
++    } else {
++        DEBUG((DEBUG_INFO, "[SmartSmm] Unable to map physical address\r\n"));
++        return EFI_ABORTED;
++    }
++
++    return EFI_SUCCESS;
++}
++
++EFI_STATUS
++EFIAPI
++CmdPhysWrite(
++    IN VOID    *AddressToWrite,
++    IN VOID    *DataToWrite,
++    IN UINT64   LengthToWrite 
++) {
++    DEBUG((DEBUG_INFO, "[SmartSmm] Writing to the physical memory\r\n"));
++
++    // validate input
++    if((!AddressToWrite || !DataToWrite || !LengthToWrite) || LengthToWrite > BASE_4KB) {
++        DEBUG((DEBUG_INFO, "[SmartSmm] Invalid parameters has been passed to specific command\r\n"));
++        return EFI_INVALID_PARAMETER;
++    }
++
++    // map target physical memory to the SMRAM
++    UINT64 PhysMapped = MapPhysAddrIntoSmram(AddressToWrite);
++    if(PhysMapped == 0) {
++        DEBUG((DEBUG_INFO, "[SmartSmm] Unable to map physical memory to the SMRAM\r\n"));
++        return EFI_ABORTED;
++    }
++
++    // copy data to the target address
++    PhysMemCpy(PhysMapped, DataToWrite, LengthToWrite);
++
++    RestoreSmramMappings();
++
++    return EFI_SUCCESS;
++}
++
++EFI_STATUS
++EFIAPI
++SmartSmiHandler (
++    IN EFI_HANDLE DispatchHandle,
++    IN CONST VOID* RegisterContext,
++    IN OUT VOID* CommBuffer,
++    IN OUT UINTN* CommBufferSize
++    )
++{
++    EFI_STATUS Status;
++    UINT8 APM_CNT_VALUE;
++    CHAR16 *MyVariableName = L"MyVariable";
++    EFI_GUID VendorGuid = MY_VARIABLE_GUID;
++    UINT32 Attributes;
++    UINTN VariableSize = 0;
++    VOID *VariableData = NULL;
++    RequestParameters *Req = NULL;
++
++    Status = mMmCpuIo->Io.Read(mMmCpuIo, MM_IO_UINT8, ICH9_APM_CNT, 1, &APM_CNT_VALUE);
++    ASSERT_EFI_ERROR(Status);
++
++    if (APM_CNT_VALUE != 0x01)
++    {
++        return EFI_WARN_INTERRUPT_SOURCE_QUIESCED;
++    }
++
++    DEBUG((DEBUG_INFO, "[SmartSmm] SMI 0x%02x\n", APM_CNT_VALUE));
++
++    Status = mSmmVariable->SmmGetVariable(
++        MyVariableName,
++        &VendorGuid,
++        &Attributes,
++        &VariableSize,
++        NULL
++    );
++    
++    DEBUG((DEBUG_INFO, "size is %ld\n", VariableSize));
++
++    if (Status == EFI_BUFFER_TOO_SMALL) {
++        VariableData = AllocateZeroPool(VariableSize > 4096 ? VariableData : 4096);
++        if (VariableData == NULL) {
++            DEBUG((DEBUG_INFO, "AllocateZeroPool Failed\n"));
++            return EFI_WARN_INTERRUPT_SOURCE_QUIESCED;
++        }
++        Status = mSmmVariable->SmmGetVariable(
++            MyVariableName,
++            &VendorGuid,
++            &Attributes,
++            &VariableSize,
++            VariableData
++        );
++
++        if (!EFI_ERROR(Status)) {
++            DEBUG((DEBUG_INFO, "Variable Data: 0x%016lx\n", VariableData));
++
++            for (UINT64 j = 0; j < VariableSize; ++j) {
++                DEBUG((DEBUG_INFO, "0x%02x ", ((UINT8 *)VariableData)[j]));
++            }
++            DEBUG((DEBUG_INFO, "\n"));
++
++        } else {
++            DEBUG((DEBUG_INFO, "Get Variable failed: %r\n", Status));
++            return EFI_WARN_INTERRUPT_SOURCE_QUIESCED;
++        }
++
++        Req = (RequestParameters *)VariableData;
++
++    } else {
++        DEBUG((DEBUG_INFO, "Get Variable failed: %r\n", Status));
++        return EFI_WARN_INTERRUPT_SOURCE_QUIESCED;
++    }
++
++
++    if (Req == NULL) {
++        return EFI_WARN_INTERRUPT_SOURCE_QUIESCED;
++    }
++
++    if (Req->ParameterId == 0) {
++        EFI_PHYSICAL_ADDRESS BufferAddress = 0UL;
++        Status = gSmst->SmmAllocatePages(AllocateAnyPages, EfiRuntimeServicesData, 1, &BufferAddress);
++        ASSERT_EFI_ERROR(Status);
++
++        VOID *DataPtr = Req->ReadParameter.TargetAddress;
++        UINT64 BytesToRead = Req->ReadParameter.BytesToRead;
++        DEBUG((DEBUG_INFO, "into here, 0x%016lx, %ld\n", DataPtr, BytesToRead));
++        Status = CmdPhysRead(DataPtr, BufferAddress, BytesToRead);
++
++        for (UINT64 i = 0; i < BytesToRead; ++i) {
++            DEBUG((DEBUG_INFO, "%d\n", ((UINT8 *)BufferAddress)[i]));
++        }
++
++        ASSERT_EFI_ERROR(Status);
++    } else if (Req->ParameterId == 1) {
++        VOID *DataPtr = Req->WriteParameter.TargetAddress;
++        UINT64 BytesToWrite = Req->WriteParameter.BytesToWrite;
++        VOID *DataToWrite = (void *)Req->WriteParameter.DataToWrite;
++
++        for (UINT64 i = 0; i < BytesToWrite; ++i) {
++            DEBUG((DEBUG_INFO, "%d ", ((UINT8 *)DataToWrite)[i]));
++        }
++        DEBUG((DEBUG_INFO, "\n"));
++
++        Status = CmdPhysWrite(DataPtr, DataToWrite, BytesToWrite);
++        ASSERT_EFI_ERROR(Status);
++    }
++
++    FreePool(VariableData);
++    return EFI_WARN_INTERRUPT_SOURCE_QUIESCED;
++}
++
++EFI_STATUS
++EFIAPI
++SmartSmmInitialize (
++    IN EFI_HANDLE ImageHandle,
++    IN EFI_SYSTEM_TABLE* SystemTable
++    )
++{
++    EFI_STATUS Status;
++    EFI_HANDLE Handle;
++
++    DEBUG((DEBUG_INFO, "[SmartSmm] SmartSmmInitialize called\n"));
++
++    Status = gMmst->MmLocateProtocol(&gEfiMmCpuIoProtocolGuid, NULL, (VOID **)&mMmCpuIo);
++    ASSERT_EFI_ERROR(Status);
++
++    Status = gSmst->SmmLocateProtocol(&gEfiSmmVariableProtocolGuid, NULL, (VOID **)&mSmmVariable);
++    ASSERT_EFI_ERROR(Status);
++   
++    Status = gMmst->MmiHandlerRegister(SmartSmiHandler, NULL, &Handle);
++    ASSERT_EFI_ERROR(Status);
++
++    // allocate page for remaping virtual and physical addresses
++    Status = gSmst->SmmAllocatePages(AllocateAnyPages, EfiRuntimeServicesData, 1, &gRemapPage);
++    if(EFI_ERROR(Status)) {
++        DEBUG((DEBUG_INFO, "[SmartSmm] Unable to allocate remap page\r\n"));
++        return Status;
++    }
++
++    gBS->SetMem(gRemapPage, EFI_PAGE_SIZE, 0);
++
++    return Status;
++}
+diff --git a/OvmfPkg/SmartSmm/SmartSmm.inf b/OvmfPkg/SmartSmm/SmartSmm.inf
+new file mode 100755
+index 0000000000..cc3cc187d6
+--- /dev/null
++++ b/OvmfPkg/SmartSmm/SmartSmm.inf
+@@ -0,0 +1,46 @@
++## @file
++# A skelton of the root SMI handler.
++#
++# Copyright (c) 2021 Satoshi Tanda
++#
++# SPDX-License-Identifier: BSD-2-Clause-Patent
++##
++
++[Defines]
++  INF_VERSION                    = 1.29
++  BASE_NAME                      = SmartSmm
++  FILE_GUID                      = CD16468B-1E0D-F239-E0E9-8B9DEC33BAEE
++  MODULE_TYPE                    = DXE_SMM_DRIVER
++  ENTRY_POINT                    = SmartSmmInitialize
++  PI_SPECIFICATION_VERSION       = 0x00010046                            # PI-1.7.0
++
++[Sources]
++  SmartSmm.c
++  Defs.h
++  Pte.h
++
++[Packages]
++  MdePkg/MdePkg.dec
++  OvmfPkg/OvmfPkg.dec
++  MdeModulePkg/MdeModulePkg.dec
++
++[LibraryClasses]
++  UefiLib
++  BaseLib
++  CpuLib
++  IoLib
++  SmmServicesTableLib
++  SmmMemLib
++  UefiRuntimeServicesTableLib
++  UefiBootServicesTableLib	
++  UefiDriverEntryPoint
++  MmServicesTableLib
++  MemoryAllocationLib
++
++[Protocols]
++  gEfiMmCpuIoProtocolGuid
++  gEfiSmmVariableProtocolGuid
++
++[Depex]
++  gEfiMmCpuIoProtocolGuid
++  AND gEfiSmmVariableProtocolGuid
+diff --git a/run-ovmf/hda-contents/attack_rookie.sh b/run-ovmf/hda-contents/attack_rookie.sh
+new file mode 100755
+index 0000000000..422f9c2f6a
+--- /dev/null
++++ b/run-ovmf/hda-contents/attack_rookie.sh
+@@ -0,0 +1,20 @@
++#!/bin/bash
++
++VAR_PATH="/sys/firmware/efi/efivars/MyVariable-a3a56e56-1d23-06dc-24bf-1473ff54e629"
++
++if [ -e $VAR_PATH ]; then
++    chattr -i $VAR_PATH
++    rm $VAR_PATH
++    echo "Removed $VAR_PATH"
++fi
++
++if [ ! -x "v2p" ]; then
++    gcc -o v2p mnt/v2p.c
++    gcc -o smi mnt/smi.c
++fi
++
++./v2p $*
++
++if [ $? -eq 0 ]; then
++    ./smi
++fi
+diff --git a/run-ovmf/hda-contents/pass_params.sh b/run-ovmf/hda-contents/pass_params.sh
+new file mode 100755
+index 0000000000..6caf56a597
+--- /dev/null
++++ b/run-ovmf/hda-contents/pass_params.sh
+@@ -0,0 +1,20 @@
++#!/bin/bash
++set -x
++VAR_PATH="/sys/firmware/efi/efivars/MyVariable-a3a56e56-1d23-06dc-24bf-1473ff54e629"
++
++if [ -e $VAR_PATH ]; then
++    chattr -i $VAR_PATH
++    rm $VAR_PATH
++    echo "Removed $VAR_PATH"
++fi
++
++if [ ! -x "v2p" ]; then
++    gcc -o v2p mnt/v2p.c
++    gcc -o smi mnt/smi.c
++fi
++
++./v2p $@
++
++if [ $? -eq 0 ]; then
++    ./smi
++fi
+diff --git a/run-ovmf/hda-contents/rookie.c b/run-ovmf/hda-contents/rookie.c
+new file mode 100644
+index 0000000000..4d691ac754
+--- /dev/null
++++ b/run-ovmf/hda-contents/rookie.c
+@@ -0,0 +1,25 @@
++#include <stdio.h>
++#include <stdlib.h>
++
++int main() {
++    int* p = (int *)malloc(10 * sizeof(int));
++    for (int i = 0; i < 10; ++i) {
++        p[i] = i;
++    }
++
++    printf("Pointer p: %p\n", (void*)p);
++
++    // int d;
++    // scanf("%d", &d);
++    getchar();
++
++    for (int i = 0; i < 10; ++i) {
++        printf("%d ", p[i]);
++    }
++    printf("\n");
++
++    free(p);
++
++    return 0;
++}
++
+diff --git a/run-ovmf/hda-contents/smi.c b/run-ovmf/hda-contents/smi.c
+new file mode 100644
+index 0000000000..01d1c043ca
+--- /dev/null
++++ b/run-ovmf/hda-contents/smi.c
+@@ -0,0 +1,12 @@
++#include <sys/io.h>
++#include <stdio.h>
++#define APM_CNT_PORT 0xb2
++
++int main() {
++    if (ioperm(APM_CNT_PORT, 1, 1)) {
++        perror("ioperm error");
++        return 1;
++    }
++    outb(0x01, APM_CNT_PORT);
++    return 0;
++}
+diff --git a/run-ovmf/hda-contents/v2p.c b/run-ovmf/hda-contents/v2p.c
+new file mode 100644
+index 0000000000..f8ae3f62df
+--- /dev/null
++++ b/run-ovmf/hda-contents/v2p.c
+@@ -0,0 +1,146 @@
++#include <stdio.h>
++#include <stdlib.h>
++#include <unistd.h>
++#include <errno.h>
++#include <stdint.h>
++#include <string.h>
++#include <fcntl.h>
++
++#define PAGEMAP_ENTRY 8
++#define GET_BIT(X,Y) ((X & ((uint64_t)1<<Y)) >> Y)
++#define GET_PFN(X) (X & 0x7FFFFFFFFFFFFF)
++
++#define VAR_PATH "/sys/firmware/efi/efivars/MyVariable-a3a56e56-1d23-06dc-24bf-1473ff54e629"
++
++int data_size;
++char *end;
++uint64_t phys_addr;
++char *data_content;
++
++enum CMD_TYPE {
++    CMD_READ,
++    CMD_WRITE
++} cmd_type;
++
++uint64_t get_phys_addr(uint64_t virt_addr, pid_t pid) {
++    char pagemap_file[64];
++    snprintf(pagemap_file, sizeof(pagemap_file), "/proc/%d/pagemap", pid);
++    int fd = open(pagemap_file, O_RDONLY);
++    if (fd < 0) {
++        perror("open pagemap failed");
++        exit(EXIT_FAILURE);
++    }
++
++    uint64_t page_size = getpagesize();
++    uint64_t page_idx = virt_addr / page_size;
++    uint64_t pte;
++    size_t read_bytes = pread(fd, &pte, sizeof(uint64_t), page_idx * sizeof(uint64_t));
++    if (read_bytes != sizeof(uint64_t)) {
++        perror("pread failed");
++        close(fd);
++        exit(EXIT_FAILURE);
++    }
++    close(fd);
++    
++    if (!GET_BIT(pte, 63)) {
++        perror("invalid pte");
++        exit(EXIT_FAILURE);
++    }
++    uint64_t pfn = GET_PFN(pte);
++    return (pfn * page_size) + (virt_addr % page_size);
++}
++
++void str2bytearray(const char *input, uint8_t *output, size_t *size) {
++    char *token;
++    char *inputCopy = strdup(input);
++    size_t i = 0;
++
++    token = strtok(inputCopy, "-");
++    while (token != NULL) {
++        output[i] = (uint8_t)strtol(token, NULL, 16);
++        i++;
++        token = strtok(NULL, "-");
++    }
++
++    *size = i;
++    free(inputCopy);
++}
++
++void write_var(enum CMD_TYPE type) {
++    printf("INFO: ready to write in var\n\tparameterID: %d\n\ttarget phys addr: 0x%lx\n\tdata_size: %d\n", type, phys_addr, data_size);
++    if (type == 1) {
++        printf("INFO: write data: %s\n", data_content);
++    }
++    
++    uint8_t cc[4 + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t) + 128] = {
++        0x07, 0x00, 0x00, 0x00
++    };
++
++    uint64_t type_64 = (uint64_t) type;
++    memcpy(cc + 4, &type_64, sizeof(uint64_t));
++
++    memcpy(cc + 4 + sizeof(uint64_t), &phys_addr, sizeof(uint64_t));
++
++    uint64_t data_size_64 = (uint64_t) data_size;
++    memcpy(cc + 4 + sizeof(uint64_t) + sizeof(uint64_t), &data_size_64, sizeof(uint64_t));
++
++    size_t array_size = 0;
++    if (type)
++        str2bytearray(data_content, cc + 4 + 3*sizeof(uint64_t), &array_size);
++
++    int need_write_size = type ? (4 + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t) + data_size) : (4 + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t));
++    printf("INFO: cc array contents:\n");
++    for (size_t i = 0; i < need_write_size; ++i) {
++        printf("%02X ", cc[i]);
++    }
++    printf("\n");
++
++    int fd = open(VAR_PATH, O_WRONLY | O_CREAT);
++    if (fd == -1) {
++        perror("ERROR: opening file");
++        return;
++    }
++
++    ssize_t bytes_written = write(fd, cc, need_write_size);
++    printf("INFO: bytes_written: %ld\n", bytes_written);
++    if (bytes_written != need_write_size) {
++        perror("ERROR: writing to file");
++        close(fd);
++        return;
++    }
++
++    close(fd);
++
++    printf("INFO: successfully wrote %ld bytes to %s\n", bytes_written, VAR_PATH);
++
++    return;
++}
++
++int main(int argc, char ** argv){
++    printf("%d\n", argc);
++    if(argc != 6 && argc != 5){
++        printf("Usage:\n    v2p PID VIRTUAL_ADDRESS OPTION(0:READ/1:WRITE) DATA_SIZE [DATA_CONTENT]\n");
++        return -1;
++    }
++
++    pid_t pid = (pid_t)strtol(argv[1], &end, 10);
++    if (end == argv[1] || *end != '\0' || pid <= 0){
++        printf("ERROR: invalid PID\n");
++        return -1;
++    }
++    
++    uint64_t virt_addr = strtoll(argv[2], NULL, 16);
++
++    cmd_type = strtol(argv[3], NULL, 10);
++
++    data_size = strtol(argv[4], NULL, 10);
++
++    data_content = argv[5];
++
++    phys_addr = get_phys_addr(virt_addr, pid);
++    printf("Phys addr: %lu", phys_addr);
++
++    write_var(cmd_type);
++
++    return 0;
++}
+diff --git a/run-ovmf/image/create-image.sh b/run-ovmf/image/create-image.sh
+new file mode 100755
+index 0000000000..4afbbfbc90
+--- /dev/null
++++ b/run-ovmf/image/create-image.sh
+@@ -0,0 +1,201 @@
++#!/usr/bin/env bash
++# Copyright 2016 syzkaller project authors. All rights reserved.
++# Use of this source code is governed by Apache 2 LICENSE that can be found in the LICENSE file.
++
++# create-image.sh creates a minimal Debian Linux image suitable for syzkaller.
++
++set -eux
++
++# Create a minimal Debian distribution in a directory.
++PREINSTALL_PKGS=openssh-server,curl,tar,gcc,libc6-dev,time,strace,sudo,less,psmisc,selinux-utils,policycoreutils,checkpolicy,selinux-policy-default,firmware-atheros,debian-ports-archive-keyring
++
++# If ADD_PACKAGE is not defined as an external environment variable, use our default packages
++if [ -z ${ADD_PACKAGE+x} ]; then
++    ADD_PACKAGE="make,sysbench,git,vim,tmux,usbutils,tcpdump"
++fi
++
++# Variables affected by options
++ARCH=$(uname -m)
++RELEASE=bullseye
++FEATURE=minimal
++SEEK=2047
++PERF=false
++
++# Display help function
++display_help() {
++    echo "Usage: $0 [option...] " >&2
++    echo
++    echo "   -a, --arch                 Set architecture"
++    echo "   -d, --distribution         Set on which debian distribution to create"
++    echo "   -f, --feature              Check what packages to install in the image, options are minimal, full"
++    echo "   -s, --seek                 Image size (MB), default 2048 (2G)"
++    echo "   -h, --help                 Display help message"
++    echo "   -p, --add-perf             Add perf support with this option enabled. Please set envrionment variable \$KERNEL at first"
++    echo
++}
++
++while true; do
++    if [ $# -eq 0 ];then
++	echo $#
++	break
++    fi
++    case "$1" in
++        -h | --help)
++            display_help
++            exit 0
++            ;;
++        -a | --arch)
++	    ARCH=$2
++            shift 2
++            ;;
++        -d | --distribution)
++	    RELEASE=$2
++            shift 2
++            ;;
++        -f | --feature)
++	    FEATURE=$2
++            shift 2
++            ;;
++        -s | --seek)
++	    SEEK=$(($2 - 1))
++            shift 2
++            ;;
++        -p | --add-perf)
++	    PERF=true
++            shift 1
++            ;;
++        -*)
++            echo "Error: Unknown option: $1" >&2
++            exit 1
++            ;;
++        *)  # No more options
++            break
++            ;;
++    esac
++done
++
++# Handle cases where qemu and Debian use different arch names
++case "$ARCH" in
++    ppc64le)
++        DEBARCH=ppc64el
++        ;;
++    aarch64)
++        DEBARCH=arm64
++        ;;
++    arm)
++        DEBARCH=armel
++        ;;
++    x86_64)
++        DEBARCH=amd64
++        ;;
++    *)
++        DEBARCH=$ARCH
++        ;;
++esac
++
++# Foreign architecture
++
++FOREIGN=false
++if [ $ARCH != $(uname -m) ]; then
++    # i386 on an x86_64 host is exempted, as we can run i386 binaries natively
++    if [ $ARCH != "i386" -o $(uname -m) != "x86_64" ]; then
++        FOREIGN=true
++    fi
++fi
++
++if [ $FOREIGN = "true" ]; then
++    # Check for according qemu static binary
++    if ! which qemu-$ARCH-static; then
++        echo "Please install qemu static binary for architecture $ARCH (package 'qemu-user-static' on Debian/Ubuntu/Fedora)"
++        exit 1
++    fi
++    # Check for according binfmt entry
++    if [ ! -r /proc/sys/fs/binfmt_misc/qemu-$ARCH ]; then
++        echo "binfmt entry /proc/sys/fs/binfmt_misc/qemu-$ARCH does not exist"
++        exit 1
++    fi
++fi
++
++# Double check KERNEL when PERF is enabled
++if [ $PERF = "true" ] && [ -z ${KERNEL+x} ]; then
++    echo "Please set KERNEL environment variable when PERF is enabled"
++    exit 1
++fi
++
++# If full feature is chosen, install more packages
++if [ $FEATURE = "full" ]; then
++    PREINSTALL_PKGS=$PREINSTALL_PKGS","$ADD_PACKAGE
++fi
++
++DIR=$RELEASE
++sudo rm -rf $DIR
++sudo mkdir -p $DIR
++sudo chmod 0755 $DIR
++
++# 1. debootstrap stage
++
++DEBOOTSTRAP_PARAMS="--arch=$DEBARCH --include=$PREINSTALL_PKGS --components=main,contrib,non-free,non-free-firmware $RELEASE $DIR"
++if [ $FOREIGN = "true" ]; then
++    DEBOOTSTRAP_PARAMS="--foreign $DEBOOTSTRAP_PARAMS"
++fi
++
++# riscv64 is hosted in the debian-ports repository
++# debian-ports doesn't include non-free, so we exclude firmware-atheros
++if [ $DEBARCH == "riscv64" ]; then
++    DEBOOTSTRAP_PARAMS="--keyring /usr/share/keyrings/debian-ports-archive-keyring.gpg --exclude firmware-atheros $DEBOOTSTRAP_PARAMS http://deb.debian.org/debian-ports"
++fi
++
++# debootstrap may fail for EoL Debian releases
++RET=0
++sudo --preserve-env=http_proxy,https_proxy,ftp_proxy,no_proxy debootstrap $DEBOOTSTRAP_PARAMS || RET=$?
++
++if [ $RET != 0 ] && [ $DEBARCH != "riscv64" ]; then
++    # Try running debootstrap again using the Debian archive
++    DEBOOTSTRAP_PARAMS="--keyring /usr/share/keyrings/debian-archive-removed-keys.gpg $DEBOOTSTRAP_PARAMS https://archive.debian.org/debian-archive/debian/"
++    sudo --preserve-env=http_proxy,https_proxy,ftp_proxy,no_proxy debootstrap $DEBOOTSTRAP_PARAMS
++fi
++
++# 2. debootstrap stage: only necessary if target != host architecture
++
++if [ $FOREIGN = "true" ]; then
++    sudo cp $(which qemu-$ARCH-static) $DIR/$(which qemu-$ARCH-static)
++    sudo chroot $DIR /bin/bash -c "/debootstrap/debootstrap --second-stage"
++fi
++
++# Set some defaults and enable promtless ssh to the machine for root.
++sudo sed -i '/^root/ { s/:x:/::/ }' $DIR/etc/passwd
++echo 'T0:23:respawn:/sbin/getty -L ttyS0 115200 vt100' | sudo tee -a $DIR/etc/inittab
++printf '\nauto eth0\niface eth0 inet dhcp\n' | sudo tee -a $DIR/etc/network/interfaces
++echo '/dev/root / ext4 defaults 0 0' | sudo tee -a $DIR/etc/fstab
++echo 'debugfs /sys/kernel/debug debugfs defaults 0 0' | sudo tee -a $DIR/etc/fstab
++echo 'securityfs /sys/kernel/security securityfs defaults 0 0' | sudo tee -a $DIR/etc/fstab
++echo 'configfs /sys/kernel/config/ configfs defaults 0 0' | sudo tee -a $DIR/etc/fstab
++echo 'binfmt_misc /proc/sys/fs/binfmt_misc binfmt_misc defaults 0 0' | sudo tee -a $DIR/etc/fstab
++echo -en "127.0.0.1\tlocalhost\n" | sudo tee $DIR/etc/hosts
++echo "nameserver 8.8.8.8" | sudo tee -a $DIR/etc/resolv.conf
++echo "syzkaller" | sudo tee $DIR/etc/hostname
++ssh-keygen -f $RELEASE.id_rsa -t rsa -N ''
++sudo mkdir -p $DIR/root/.ssh/
++cat $RELEASE.id_rsa.pub | sudo tee $DIR/root/.ssh/authorized_keys
++
++# Add perf support
++if [ $PERF = "true" ]; then
++    cp -r $KERNEL $DIR/tmp/
++    BASENAME=$(basename $KERNEL)
++    sudo chroot $DIR /bin/bash -c "apt-get update; apt-get install -y flex bison python-dev libelf-dev libunwind8-dev libaudit-dev libslang2-dev libperl-dev binutils-dev liblzma-dev libnuma-dev"
++    sudo chroot $DIR /bin/bash -c "cd /tmp/$BASENAME/tools/perf/; make"
++    sudo chroot $DIR /bin/bash -c "cp /tmp/$BASENAME/tools/perf/perf /usr/bin/"
++    rm -r $DIR/tmp/$BASENAME
++fi
++
++# Add udev rules for custom drivers.
++# Create a /dev/vim2m symlink for the device managed by the vim2m driver
++echo 'ATTR{name}=="vim2m", SYMLINK+="vim2m"' | sudo tee -a $DIR/etc/udev/rules.d/50-udev-default.rules
++
++# Build a disk image
++dd if=/dev/zero of=$RELEASE.img bs=1M seek=$SEEK count=1
++sudo mkfs.ext4 -F $RELEASE.img
++sudo mkdir -p /mnt/$DIR
++sudo mount -o loop $RELEASE.img /mnt/$DIR
++sudo cp -a $DIR/. /mnt/$DIR/.
++sudo umount /mnt/$DIR
+diff --git a/run-ovmf/run.sh b/run-ovmf/run.sh
+new file mode 100755
+index 0000000000..1dccfa00ff
+--- /dev/null
++++ b/run-ovmf/run.sh
+@@ -0,0 +1,14 @@
++qemu-system-x86_64 \
++	-m 4096 \
++	-smp 4 \
++	-pflash ../Build/OvmfX64/DEBUG_GCC5/FV/OVMF.fd \
++	-machine q35,smm=on \
++	-kernel $1/arch/x86/boot/bzImage \
++	-append "console=ttyS0 root=/dev/sda nokaslr" \
++	-drive file=image/bullseye.img,format=raw \
++	-virtfs local,path=hda-contents,mount_tag=host0,security_model=passthrough,id=host0 \
++	-nographic \
++	-pidfile vm.pid \
++	-debugcon file:debug.log \
++	-global isa-debugcon.iobase=0x402 \
++	2>&1 | tee vm.log
+-- 
+2.34.1
+
