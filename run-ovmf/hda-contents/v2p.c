@@ -12,95 +12,45 @@
 
 #define VAR_PATH "/sys/firmware/efi/efivars/MyVariable-a3a56e56-1d23-06dc-24bf-1473ff54e629"
 
-int i, c, pid, status;
-unsigned long virt_addr;
 int data_size;
-FILE * f;
 char *end;
 uint64_t phys_addr;
 char *data_content;
-uint64_t read_val, file_offset, page_size;
-char path_buf [0x100] = {};
-
 
 enum CMD_TYPE {
     CMD_READ,
     CMD_WRITE
-}cmd_type;
+} cmd_type;
 
-void read_pagemap(char * path_buf, unsigned long virt_addr);
-void write_var(enum CMD_TYPE type);
-
-int main(int argc, char ** argv){
-    printf("%d\n", argc);
-    if(argc != 6 && argc != 5){
-        printf("Usage:\n./VtoP PID VIRTUAL_ADDRESS METHOD(0:READ/1:WRITE) DATA_SIZE [DATA_CONTENT]\n");
-        return -1;
+uint64_t get_phys_addr(uint64_t virt_addr, pid_t pid) {
+    char pagemap_file[64];
+    snprintf(pagemap_file, sizeof(pagemap_file), "/proc/%d/pagemap", pid);
+    int fd = open(pagemap_file, O_RDONLY);
+    if (fd < 0) {
+        perror("open pagemap failed");
+        exit(EXIT_FAILURE);
     }
 
-    pid = strtol(argv[1], &end, 10);
-    if (end == argv[1] || *end != '\0' || pid <= 0){
-        printf("ERROR: invalid PID\n");
-        return -1;
+    uint64_t page_size = getpagesize();
+    uint64_t page_idx = virt_addr / page_size;
+    uint64_t pte;
+    size_t read_bytes = pread(fd, &pte, sizeof(uint64_t), page_idx * sizeof(uint64_t));
+    if (read_bytes != sizeof(uint64_t)) {
+        perror("pread failed");
+        close(fd);
+        exit(EXIT_FAILURE);
     }
+    close(fd);
     
-    virt_addr = strtoll(argv[2], NULL, 16);
-    if(pid != -1)
-        sprintf(path_buf, "/proc/%u/pagemap", pid);
-
-    cmd_type = strtol(argv[3], NULL, 10);
-
-    data_size = strtol(argv[4], NULL, 10);
-
-    data_content = argv[5];
-
-    page_size = getpagesize();
-    read_pagemap(path_buf, virt_addr);
-
-    write_var(cmd_type);
-    return 0;
+    if (!GET_BIT(pte, 63)) {
+        perror("invalid pte");
+        exit(EXIT_FAILURE);
+    }
+    uint64_t pfn = GET_PFN(pte);
+    return (pfn * page_size) + (virt_addr % page_size);
 }
 
-void read_pagemap(char * path_buf, unsigned long virt_addr){
-    f = fopen(path_buf, "rb");
-    if(!f){
-        printf("ERROR: failed to open %s\n", path_buf);
-        return;
-    }
-
-    file_offset = virt_addr / page_size * PAGEMAP_ENTRY;
-    printf("Vaddr: 0x%lx, Page_size: %lld, Entry_size: %d\n", virt_addr, page_size, PAGEMAP_ENTRY);
-    printf("Reading %s at 0x%llx\n", path_buf, (unsigned long long) file_offset);
-    status = fseek(f, file_offset, SEEK_SET);
-    if(status){
-        perror("ERROR: failed to fseek");
-        return;
-    }
-    read_val = 0;
-    unsigned char c_buf[PAGEMAP_ENTRY];
-    for(i = 0; i < PAGEMAP_ENTRY; i++){
-        c = getc(f);
-        if(c == EOF){
-            return;
-        }
-        c_buf[PAGEMAP_ENTRY - i - 1] = c;
-    }
-    for(i = 0; i < PAGEMAP_ENTRY; i++){
-        read_val = (read_val << 8) + c_buf[i];
-    }
-    
-    if(GET_BIT(read_val, 63)) {
-        uint64_t pfn = GET_PFN(read_val);
-        phys_addr = pfn * page_size + virt_addr % page_size;
-        printf("PHYS_ADDR: 0x%llx\n", (unsigned long long) phys_addr);
-    }
-    else printf("Page not present\n");
-    
-    fclose(f);
-    return;
-}
-
-void convertStringToUint8Array(const char *input, uint8_t *output, size_t *size) {
+void str2bytearray(const char *input, uint8_t *output, size_t *size) {
     char *token;
     char *inputCopy = strdup(input);
     size_t i = 0;
@@ -117,7 +67,7 @@ void convertStringToUint8Array(const char *input, uint8_t *output, size_t *size)
 }
 
 void write_var(enum CMD_TYPE type) {
-    printf("INFO: ready to write in var\n\tparameterID: %d\n\ttarget phys addr: 0x%llx\n\tdata_size: %d\n", type, phys_addr, data_size);
+    printf("INFO: ready to write in var\n\tparameterID: %d\n\ttarget phys addr: 0x%lx\n\tdata_size: %d\n", type, phys_addr, data_size);
     if (type == 1) {
         printf("INFO: write data: %s\n", data_content);
     }
@@ -134,9 +84,9 @@ void write_var(enum CMD_TYPE type) {
     uint64_t data_size_64 = (uint64_t) data_size;
     memcpy(cc + 4 + sizeof(uint64_t) + sizeof(uint64_t), &data_size_64, sizeof(uint64_t));
 
-    int array_size = 0;
+    size_t array_size = 0;
     if (type)
-        convertStringToUint8Array(data_content, cc + 4 + 3*sizeof(uint64_t), &array_size);
+        str2bytearray(data_content, cc + 4 + 3*sizeof(uint64_t), &array_size);
 
     int need_write_size = type ? (4 + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t) + data_size) : (4 + sizeof(uint64_t) + sizeof(uint64_t) + sizeof(uint64_t));
     printf("INFO: cc array contents:\n");
@@ -152,7 +102,7 @@ void write_var(enum CMD_TYPE type) {
     }
 
     ssize_t bytes_written = write(fd, cc, need_write_size);
-    printf("INFO: bytes_written: %d\n", bytes_written);
+    printf("INFO: bytes_written: %ld\n", bytes_written);
     if (bytes_written != need_write_size) {
         perror("ERROR: writing to file");
         close(fd);
@@ -166,3 +116,31 @@ void write_var(enum CMD_TYPE type) {
     return;
 }
 
+int main(int argc, char ** argv){
+    printf("%d\n", argc);
+    if(argc != 6 && argc != 5){
+        printf("Usage:\n    v2p PID VIRTUAL_ADDRESS OPTION(0:READ/1:WRITE) DATA_SIZE [DATA_CONTENT]\n");
+        return -1;
+    }
+
+    pid_t pid = (pid_t)strtol(argv[1], &end, 10);
+    if (end == argv[1] || *end != '\0' || pid <= 0){
+        printf("ERROR: invalid PID\n");
+        return -1;
+    }
+    
+    uint64_t virt_addr = strtoll(argv[2], NULL, 16);
+
+    cmd_type = strtol(argv[3], NULL, 10);
+
+    data_size = strtol(argv[4], NULL, 10);
+
+    data_content = argv[5];
+
+    phys_addr = get_phys_addr(virt_addr, pid);
+    printf("Phys addr: %lu", phys_addr);
+
+    write_var(cmd_type);
+
+    return 0;
+}

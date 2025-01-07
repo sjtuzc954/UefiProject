@@ -2,7 +2,7 @@
 
 #pragma pack(1)
 
-typedef union _PTE4 {
+typedef union _PTE0 {
     UINT64 Value;
     struct {
         UINT64 Present : 1;
@@ -19,9 +19,9 @@ typedef union _PTE4 {
         UINT64 Ignored1 : 11;
         UINT64 ExecutionDisabled : 1;
     } Bits;
-} PTE4, *PPTE4;
+} PTE0, *PPTE0;
 
-typedef union _PTE3 {
+typedef union _PTE1 {
     UINT64 Value;
     struct {
         UINT64 Present : 1;
@@ -38,7 +38,7 @@ typedef union _PTE3 {
         UINT64 Ignored1 : 11;
         UINT64 ExecutionDisabled : 1;
     } Bits;
-} PTE3, *PPTE3;
+} PTE1, *PPTE1;
 
 typedef union _PTE2 {
     UINT64 Value;
@@ -59,7 +59,7 @@ typedef union _PTE2 {
     } Bits;
 } PTE2, *PPTE2;
 
-typedef union _PTE {
+typedef union _PTE3 {
     UINT64 Value;
     struct {
         UINT64 Present : 1;
@@ -78,6 +78,6 @@ typedef union _PTE {
         UINT64 ProtectionKey : 4;
         UINT64 ExecutionDisabled : 1;
     } Bits;
-} PTE, *PPTE;
+} PTE3, *PPTE3;
 
 #pragma pack()

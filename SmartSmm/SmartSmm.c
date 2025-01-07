@@ -100,17 +100,17 @@ RemapAddress(
     DEBUG((DEBUG_INFO, "[SmartSmm] RemapAddress\n"));
     DEBUG((DEBUG_INFO, "[SmartSmm] old address %x\n", VirtAddress));
 
-    PTE4 Pte4;
-    Pte4.Value = *(UINT64 *)(sizeof(UINT64) * ((VirtAddress >> 39) & 0x1FF) + Cr3);
-    if(!Pte4.Bits.Present)
+    PTE0 Pte0;
+    Pte0.Value = *(UINT64 *)(sizeof(UINT64) * ((VirtAddress >> 39) & 0x1FF) + Cr3);
+    if(!Pte0.Bits.Present)
         return FALSE;
 
-    DEBUG((DEBUG_INFO, "[SmartSmm] PTE4 bits present\n"));
+    DEBUG((DEBUG_INFO, "[SmartSmm] PTE0 bits present\n"));
 
     UINT64 Cr0;
-    PPTE3 Ppte3 = (PPTE3)((Pte4.Bits.Pfn << EFI_PAGE_SHIFT) + ((VirtAddress >> 30) & 0x1FF) * sizeof(UINT64));
-    if(Ppte3->Bits.Present) {
-        if(Ppte3->Bits.Size) {
+    PPTE1 Ppte1 = (PPTE1)((Pte0.Bits.Pfn << EFI_PAGE_SHIFT) + ((VirtAddress >> 30) & 0x1FF) * sizeof(UINT64));
+    if(Ppte1->Bits.Present) {
+        if(Ppte1->Bits.Size) {
             // VirtAddress is 1GB mapped
             if(PageSize)
                 *PageSize = Page1G;
@@ -118,7 +118,7 @@ RemapAddress(
             Cr0 = AsmReadCr0();
             AsmWriteCr0(Cr0 & ~CR0_WP);
 
-            Ppte3->Bits.Pfn = ((PhysAddress & ~(EFI_PAGE_1GB - 1)) >> EFI_PAGE_SHIFT);
+            Ppte1->Bits.Pfn = ((PhysAddress & ~(EFI_PAGE_1GB - 1)) >> EFI_PAGE_SHIFT);
 
             AsmWriteCr0(Cr0);
 
@@ -127,11 +127,11 @@ RemapAddress(
             return TRUE;
         }
     } else {
-        DEBUG((DEBUG_INFO, "[SmartSmm] Ppte3 bits not present\n"));
+        DEBUG((DEBUG_INFO, "[SmartSmm] Ppte1 bits not present\n"));
         return FALSE;
     }
 
-    PPTE2 Ppte2 = (PPTE2)((Ppte3->Bits.Pfn << EFI_PAGE_SHIFT) + ((VirtAddress >> 21) & 0x1FF) * sizeof(UINT64));
+    PPTE2 Ppte2 = (PPTE2)((Ppte1->Bits.Pfn << EFI_PAGE_SHIFT) + ((VirtAddress >> 21) & 0x1FF) * sizeof(UINT64));
     if(Ppte2->Bits.Present) {
         if(Ppte2->Bits.Size) {
             // VirtAddress is 2MB mapped
@@ -154,8 +154,8 @@ RemapAddress(
         return FALSE;
     }
 
-    PPTE Ppte = (PPTE)((Ppte2->Bits.Pfn << EFI_PAGE_SHIFT) + ((VirtAddress >> 12) & 0x1FF) * sizeof(UINT64));
-    if(Ppte->Bits.Present) {
+    PPTE3 Ppte3 = (PPTE3)((Ppte2->Bits.Pfn << EFI_PAGE_SHIFT) + ((VirtAddress >> 12) & 0x1FF) * sizeof(UINT64));
+    if(Ppte3->Bits.Present) {
         // VirtAddress is 4KB mapped
         if(PageSize)
             *PageSize = Page4K;
@@ -163,7 +163,7 @@ RemapAddress(
         Cr0 = AsmReadCr0();
         AsmWriteCr0(Cr0 & ~CR0_WP);
 
-        Ppte->Bits.Pfn = ((PhysAddress & ~(EFI_PAGE_4KB - 1)) >> EFI_PAGE_SHIFT);
+        Ppte3->Bits.Pfn = ((PhysAddress & ~(EFI_PAGE_4KB - 1)) >> EFI_PAGE_SHIFT);
 
         AsmWriteCr0(Cr0);
 
@@ -172,7 +172,7 @@ RemapAddress(
         return TRUE;
     }
 
-    DEBUG((DEBUG_INFO, "[SmartSmm] pte bits not present\n"));
+    DEBUG((DEBUG_INFO, "[SmartSmm] pte3 bits not present\n"));
     return FALSE;
 }
 
@@ -197,7 +197,7 @@ MapPhysAddrIntoSmram(
     UINT8 PageSize = Page4K;
     UINT64 RemapedMemory = gRemapPage;
     UINT64 Cr3 = AsmReadCr3();
-    DEBUG((DEBUG_INFO, "[SmartSmm] Cr3: 0x%016lx, 0x%016lx, 0x%016lx\n", Cr3, RemapedMemory, PhysAddress));
+    DEBUG((DEBUG_INFO, "[SmartSmm] Cr3: 0x%016lx\n", Cr3));
     
     if(RemapAddress(gRemapPage, PhysAddress, Cr3, &PageSize)) {        
         if(PageSize == Page1G) {
